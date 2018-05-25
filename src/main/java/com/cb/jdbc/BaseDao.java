@@ -2,14 +2,7 @@ package com.cb.jdbc;
 
 import java.lang.reflect.Field;
 import java.lang.reflect.Modifier;
-import java.sql.Connection;
-import java.sql.PreparedStatement;
-import java.sql.SQLException;
-import java.sql.Statement;
 import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.Comparator;
-import java.util.Date;
 import java.util.List;
 import java.util.Map;
 import java.util.regex.Matcher;
@@ -17,21 +10,17 @@ import java.util.regex.Pattern;
 
 import javax.annotation.Resource;
 import javax.persistence.Column;
+import javax.persistence.Id;
 import javax.persistence.Transient;
 
 import org.apache.commons.lang3.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.jdbc.core.JdbcTemplate;
-import org.springframework.jdbc.core.PreparedStatementCreator;
 import org.springframework.jdbc.core.RowMapper;
-import org.springframework.jdbc.support.GeneratedKeyHolder;
-import org.springframework.jdbc.support.KeyHolder;
 
 import com.cb.jdbc.annotation.AnnontationUtils;
 import com.cb.jdbc.annotation.Operator;
-import com.cb.jdbc.annotation.OptimisticLock;
-import com.cb.jdbc.annotation.Order;
 import com.cb.jdbc.annotation.TableName;
 import com.cb.jdbc.mapper.BaseMapper;
 
@@ -51,69 +40,69 @@ public abstract class BaseDao<T> implements BaseMapper<T>{
 	private Class<T> type;
 	
 	private RowMapper<T> rowMapper;
+	/**
+	 * the key id name
+	 */
+	private String keyIdName;
+	
+	private String tableName;
 	
 	public BaseDao(Class<T> classType) {
 		this.type = classType;
+		findKeyId(classType);
+		initTableName(classType);
 	}
 	
+	private void findKeyId(Class<T> classType) {
+		Field[] fields = classType.getFields();
+		for (Field field : fields) {
+			if (field.getAnnotation(Id.class) != null) {
+				Column column = field.getAnnotation(Column.class);
+				keyIdName = (column == null ? field.getName() : column.name());
+				break;
+			}
+		}
+	}
+	private void initTableName(Class<T> classType) {
+		this.tableName = classType.getAnnotation(TableName.class).value();
+	}
 	public String getNomalSqlHead(String querySql) {
 		return new StringBuilder().append(selectHead).append(where).append(" ").append(querySql).toString();
 	}
 
 	protected JdbcTemplate jdbcTemplate;
 	
-	public JdbcTemplate getJdbcTemplate() {
-		return jdbcTemplate;
-	}
 	@Resource(name="jdbcTemplate")
 	public void setJdbcTemplate(JdbcTemplate jdbcTemplate) {
 		this.jdbcTemplate = jdbcTemplate;
 	}
 	
-	public <T> T queryObject(String sql, RowMapper<T> rowMapper, Object... objects ) {
-		return queryObject(getJdbcTemplate(), sql, rowMapper, objects);
-	}
 	
 	public <T> T queryObject(JdbcTemplate jdbcTemplate,String sql, RowMapper<T> rowMapper, Object... objects ) {
 		List<T> resultList = jdbcTemplate.query(sql, objects, rowMapper);
 		return resultList == null || resultList.isEmpty() ? null : resultList.get(0);
 	}
 	
-	public <T> T getObjById(String tableName,RowMapper<T> rowMapper, long id) {
-		return getObjById(tableName, "F_id", rowMapper, id);
+	public T getObjById(Object id) {
+		String sql = selectHead + tableName + where + keyIdName + " = ?";
+		return jdbcTemplate.queryForObject(sql, rowMapper, id);
 	}
-	
-	public <T> T getObjById(String tableName, String idField, RowMapper<T> rowMapper, Object id) {
-		String sql = selectHead + tableName + where + idField + " = ?";
-		return queryObject(sql, rowMapper, id);
-	}
-	
-	public <T> T getObjById(Class<?> c,RowMapper<T> rowMapper, long id) {
-		TableName tableName = c.getAnnotation(TableName.class);
-		return getObjById(tableName.value(), rowMapper, id);
-	}
-	
-	public <T> T getObjById(Class<?> c, String idField, RowMapper<T> rowMapper, long id) {
-		TableName tableName = c.getAnnotation(TableName.class);
-		return getObjById(tableName.value(), idField, rowMapper, id);
-	}
-	
-	public <T> void  deleteObjById(Class<?> c, long id){
-		deleteObjById(c, "F_id", id);
-	}
-	
-	public <T> int  deleteObjById(Class<?> c, String keyField, long id){
-		TableName tableName = c.getAnnotation(TableName.class);
-		StringBuilder sql = new StringBuilder("delete from ").append(tableName.value())
-				.append(where).append(keyField).append(" = ?");
-		log.info(stringFormat(sql.toString(), "\\?", id));
-		return getJdbcTemplate().update(sql.toString(), id);
-	}
-	
 	
 	@Override
 	public int insert(T record) {
-		return addObj(record);
+		if (record == null) {
+			throw new NullPointerException("必传参数为空");
+		}
+		UpdateSqlHelper sqlHelper = getAddSql(record);
+		StringBuilder sql=new StringBuilder();
+		sql.append("insert into ").append(tableName).append(" ");
+		sql.append(sqlHelper.getFieldSql()).append(" values ").append(sqlHelper.getMarkSql());
+		final String sqlStr = sql.toString();
+		final List<Object> argsArr = sqlHelper.getArgs();
+		if (log.isDebugEnabled()) {
+			log.info(stringFormat(sqlStr, "\\?", argsArr.toArray()));
+		}
+		return jdbcTemplate.update(sqlStr, argsArr.toArray());
 	}
 
 	@Override
@@ -136,14 +125,15 @@ public abstract class BaseDao<T> implements BaseMapper<T>{
 
 	@Override
 	public int deleteById(Object key) {
-		// TODO Auto-generated method stub
-		return 0;
+		StringBuilder sql = new StringBuilder("delete from ").append(tableName)
+				.append(where).append(keyIdName).append(" = ?");
+		return jdbcTemplate.update(sql.toString(), key);
 	}
 
 	@Override
 	public T selectByKey(Object key) {
-		// TODO Auto-generated method stub
-		return null;
+		String sql = selectHead + tableName + where + keyIdName + " = ?";
+		return jdbcTemplate.queryForObject(sql, rowMapper, key);
 	}
 
 	@Override
@@ -158,26 +148,6 @@ public abstract class BaseDao<T> implements BaseMapper<T>{
 		return 0;
 	}
 
-	protected int addObj(T obj) {
-		TableName tableName = obj.getClass().getAnnotation(TableName.class);
-		return addObj(getJdbcTemplate(), tableName.value(), obj);
-	}
-	protected int addObj(JdbcTemplate jdbcTemplate,String tableName, T obj) {
-		if (obj == null) {
-			throw new NullPointerException("addObj 方法参数不能为空");
-		}
-		UpdateSqlHelper sqlHelper = getAddSql(obj);
-		StringBuilder sql=new StringBuilder();
-		sql.append("insert into ").append(tableName).append(" ");
-		sql.append(sqlHelper.getFieldSql()).append(" values ").append(sqlHelper.getMarkSql());
-		final String sqlStr = sql.toString();
-		final List<Object> argsArr = sqlHelper.getArgs();
-		if (log.isDebugEnabled()) {
-			log.info(stringFormat(sqlStr, "\\?", argsArr.toArray()));
-		}
-		return jdbcTemplate.update(sqlStr, argsArr.toArray());
-	}
-	
 	private <T> UpdateSqlHelper getAddSql(T obj) {
 		StringBuilder sbField=new StringBuilder();
 		StringBuilder sbArgs=new StringBuilder();
@@ -236,75 +206,29 @@ public abstract class BaseDao<T> implements BaseMapper<T>{
 	}
 	
 	/**
-	 * 按主键更新
-	 * @param tableName
-	 * @param keyField
-	 * @param updateMap
-	 * @param obj
-	 */
-	protected <T> int updateObj(String tableName,String keyField, Map<String, Object> updateMap,T obj) {
-		StringBuilder sbField=new StringBuilder();
-		List<Object> args=new ArrayList<Object>();
-		sbField.append("update ").append(tableName).append(" set ");
-		for (String field : updateMap.keySet()) {
-			if (field.equals(keyField)) {
-				continue;
-			}
-			Column column = AnnontationUtils.getFromField(Column.class, obj.getClass(), field);
-			sbField.append(column.value()).append(" = ? ,");
-			args.add(updateMap.get(field));
-		}
-		args.add(updateMap.get(keyField));
-		Column column = AnnontationUtils.getFromField(Column.class, obj.getClass(), keyField);
-		String sql = sbField.substring(0, sbField.length()-1) + " where " + column.value() +" = ?";
-		log.info(stringFormat(sql, "\\?", args.toArray()));
-		return this.getJdbcTemplate().update(sql, args.toArray());
-	}
-	
-	protected <T> void updateObj(String keyField, Map<String, Object> updateMap,T obj) {
-		TableName tableName = obj.getClass().getAnnotation(TableName.class);
-		updateObj(tableName.value(), keyField, updateMap, obj);
-	}
-	/**
 	 * 更新对象的所有字段  主键作为更新条件，不更新creatTime和updateTime字段
 	 * @param keyField  数据库主键字段
 	 * @param obj
 	 */
-	protected <T> int updateObj(String keyField, T obj){
-		return updateObj(keyField, obj, false);
-	}
-	protected <T> int updateObj(String keyField, T obj, boolean isOptimistic){
+	protected int updateObj(T obj){
 		StringBuilder sbField=new StringBuilder();
 		List<Object> args=new ArrayList<Object>();
-		TableName tableName = obj.getClass().getAnnotation(TableName.class);
-		sbField.append("update ").append(tableName.value()).append(" set ");
+		sbField.append("update ").append(tableName).append(" set ");
 		Field [] fields=obj.getClass().getDeclaredFields();
-		int version = -1;
-		String optimisticField = null;
 		if (fields != null && fields.length > 0) {
 			Object value = null;
 			Object keyValue = null; //主键值
 			for (Field field : fields) {
 				String name = field.getName();
-				if(Modifier.isStatic(field.getModifiers())
-						|| name.toLowerCase().equals("createtime")
-						|| name.toLowerCase().equals("updatetime")){
+				if(Modifier.isStatic(field.getModifiers())){
 					continue;
 				} 
 				value=BeanUtils.getProperty(obj, name);
 				if(value==null) continue;
 				Column column = AnnontationUtils.getFromField(Column.class, obj.getClass(), name);
 				if (column == null) continue;
-				if (isOptimistic && version == -1) {
-					OptimisticLock lock = AnnontationUtils.getFromField(OptimisticLock.class, obj.getClass(), name);
-					if (lock != null) {
-						version = (Integer) value;
-						value = version + 1;
-						optimisticField = column.value();
-					}
-				}
-				if(!keyField.equalsIgnoreCase(column.value())){
-					sbField.append(column.value()).append(" = ?,");
+				if(!keyIdName.equalsIgnoreCase(column.name())){
+					sbField.append(column.name()).append(" = ?,");
 					args.add(value);
 				} else {
 					keyValue = value;
@@ -316,14 +240,15 @@ public abstract class BaseDao<T> implements BaseMapper<T>{
 				throw new RuntimeException("更新没设置主键条件");
 			}
 			sbField.deleteCharAt(sbField.length()-1).append(" where ")
-				.append(keyField).append(" = ?");
-			
-			log.info(stringFormat(sbField.toString(), "\\?", args.toArray()));
-			return this.getJdbcTemplate().update(sbField.toString(), args.toArray());
+				.append(keyIdName).append(" = ?");
+			if (log.isDebugEnabled()) {
+				log.info(stringFormat(sbField.toString(), "\\?", args.toArray()));
+			}
+			return jdbcTemplate.update(sbField.toString(), args.toArray());
 		}
 		return 0;
 	}
-	public <T> List<T> queryObj(String tableName, Map<String, Object> queryMap, Class<?> obj, RowMapper<T> rowMapper){
+	public List<T> queryObj(String tableName, Map<String, Object> queryMap, Class<?> obj, RowMapper<T> rowMapper){
 		StringBuilder sbField = new StringBuilder("select * from ");
 		sbField.append(tableName).append(" where ");
 		List<Object> values = new ArrayList<Object>();
@@ -334,7 +259,7 @@ public abstract class BaseDao<T> implements BaseMapper<T>{
 				continue;
 			}
 			Column column = AnnontationUtils.getFromField(Column.class, obj, field);
-			sbField.append(column.value()).append(" = ? and ");
+			sbField.append(column.name()).append(" = ? and ");
 			values.add(queryMap.get(field));
 			empty = false;
 		}
@@ -344,11 +269,7 @@ public abstract class BaseDao<T> implements BaseMapper<T>{
 		if (log.isDebugEnabled()) {
 			log.info("sql=" + sbField.toString());
 		}
-		return getJdbcTemplate().query(sbField.toString(), rowMapper, values.toArray());
-	}
-	public <T> List<T> queryObj(Map<String, Object> queryMap, Class<?> obj, RowMapper<T> rowMapper) {
-		TableName tableName = obj.getAnnotation(TableName.class);
-		return queryObj(tableName.value(), queryMap, obj, rowMapper);
+		return jdbcTemplate.query(sbField.toString(), rowMapper, values.toArray());
 	}
 	/**
 	 * 得到完整的sql 语句
@@ -417,10 +338,10 @@ public abstract class BaseDao<T> implements BaseMapper<T>{
 		return jdbcTemplate.queryForList(querySql.toString(), args.toArray());
 	}
 	public <T> List<T> queryList(QueryVo query, int pageIndex, int pageSize, RowMapper<T> rowMapper, String db_name, String orderField){
-		return queryList(getJdbcTemplate(), query, pageIndex, pageSize, rowMapper, db_name, orderField, null);
+		return queryList(jdbcTemplate, query, pageIndex, pageSize, rowMapper, db_name, orderField, null);
 	}
 	public <T> List<T> queryList(QueryVo query, int pageIndex, int pageSize, RowMapper<T> rowMapper, String db_name, String orderField, Sequence seq){
-		return queryList(getJdbcTemplate(), query, pageIndex, pageSize, rowMapper, db_name, orderField, seq);
+		return queryList(jdbcTemplate, query, pageIndex, pageSize, rowMapper, db_name, orderField, seq);
 	}
 	public <T> List<T> queryList(QueryVo query, RowMapper<T> rowMapper, String tableName, String orderField){
 		return queryList(jdbcTemplate, query, 0, 0,rowMapper, tableName, orderField, null);
@@ -444,7 +365,7 @@ public abstract class BaseDao<T> implements BaseMapper<T>{
 		return template.queryForObject(querySql.toString(), args.toArray(), Long.class);
 	}
 	public long countQueryList(QueryVo query, String db_name){
-		return countQueryList(getJdbcTemplate(), query, db_name);
+		return countQueryList(jdbcTemplate, query, db_name);
 	}
 //	public long countQueryList(QueryVo query){
 //		return countQueryList(getJdbcTemplate(), query, getDBName());
@@ -461,30 +382,14 @@ public abstract class BaseDao<T> implements BaseMapper<T>{
 		Field [] fields=queryVo.getClass().getDeclaredFields();
 		if(fields!=null&&fields.length>0){
 			String name="";
-			Object value=null;
-			//先对字段进行排序，order 从小到大
-			Arrays.sort(fields, new Comparator<Field>() {
-				@Override
-				public int compare(Field arg1, Field arg2) {
-					Order o1 = arg1.getAnnotation(Order.class);
-					Order o2 = arg2.getAnnotation(Order.class);
-					int fieldOrder1 = (o1 == null ? 100 : o1.value());
-					int fieldOrder2 = (o2 == null ? 100 : o2.value());
-					return fieldOrder1 - fieldOrder2;
-				}
-			} );
 			for(int i=0;i<fields.length;i++){
+				Object value=null;
 				name=fields[i].getName();
 				Class<?> type = fields[i].getType();
 				if(Modifier.isStatic(fields[i].getModifiers())) continue;
 				value=BeanUtils.getProperty(queryVo, name);
-				if(value==null) continue;
-				if (type == String.class) {
-					String str = (String)value;
-					if (StringUtils.isEmpty(str)) {
-						continue;
-					}
-				}
+				if(value == null) continue;
+				
 				Column column = AnnontationUtils.getFromField(Column.class, queryVo.getClass(), name);
 				if (column == null) continue;
 				
@@ -502,7 +407,7 @@ public abstract class BaseDao<T> implements BaseMapper<T>{
 						listSize = list.size();
 						args.addAll(list);
 					}else {
-//						throw new YeahkaException("mysql in or notin operator query must use list parameter");
+						throw new RuntimeException("mysql in or notin operator query must use list parameter");
 					}
 				}
 				String operator = (mark == null ? " = " : mark.value().getOpetator());
@@ -515,9 +420,9 @@ public abstract class BaseDao<T> implements BaseMapper<T>{
 						}
 					}
 					str.append(")");
-					sbField.append(column.value()).append(operator).append(str.toString() + " and ");
+					sbField.append(column.name()).append(operator).append(str.toString() + " and ");
 				}else {
-					sbField.append(column.value()).append(operator).append(" ? and ");
+					sbField.append(column.name()).append(operator).append(" ? and ");
 					args.add(value);
 				}
 			}
@@ -531,31 +436,14 @@ public abstract class BaseDao<T> implements BaseMapper<T>{
 		return jdbcTemplate.query(sql, rowMapper, args);
 	}
 	protected <T> List<T> query(String sql, RowMapper<T> rowMapper, Object...args){
-		return query(getJdbcTemplate(), sql, rowMapper, args);
+		return query(jdbcTemplate, sql, rowMapper, args);
 	}
 	protected <T> List<T> query(JdbcTemplate jdbcTemplate,String sql, RowMapper<T> rowMapper){
 		log.info(sql);
 		return jdbcTemplate.query(sql, rowMapper);
 	}
 	protected <T> List<T> query(String sql, RowMapper<T> rowMapper){
-		return query(getJdbcTemplate(), sql, rowMapper);
-	}
-	protected static String getTable(String tableName, long sharding, int N) {
-		int i = 1;
-		while(Math.pow(10, i) < N) {
-			i++;
-		}
-		int suffex = (int) (sharding % N);
-		String suffexStr = String.valueOf(suffex);
-		int dis = i - suffexStr.length();
-		if (dis == 3) {
-			suffexStr = "000"+suffexStr;
-		}else if (dis == 2) {
-			suffexStr = "00" + suffexStr;
-		}else if (dis == 1) {
-			suffexStr = "0" + suffexStr;
-		}
-		return tableName + "_" + suffexStr;
+		return query(jdbcTemplate, sql, rowMapper);
 	}
 	
 	protected String getInSql(int size) {
@@ -570,9 +458,5 @@ public abstract class BaseDao<T> implements BaseMapper<T>{
 		sql += ")";
 		return sql;
 	}
-	public static void main(String[] args) {
-//		Pattern patten = Pattern.compile("(.*)and(\\s)*$");
-//		Matcher matcher = patten.matcher("f_uid = ? and ");
-//		System.out.println(matcher.matches());
-	}
+
 }
