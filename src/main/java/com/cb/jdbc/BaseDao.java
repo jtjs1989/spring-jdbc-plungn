@@ -23,6 +23,7 @@ import org.springframework.jdbc.core.RowMapper;
 import com.cb.jdbc.annotation.AnnontationUtils;
 import com.cb.jdbc.annotation.Operator;
 import com.cb.jdbc.mapper.BaseMapper;
+import com.cb.jdbc.rowmapper.ClassAnnotationRowMapper;
 
 public abstract class BaseDao<T> implements BaseMapper<T>{
 
@@ -51,12 +52,13 @@ public abstract class BaseDao<T> implements BaseMapper<T>{
 	
 	public BaseDao(Class<T> classType) {
 		this.type = classType;
-		findKeyId(classType);
 		initTableName(classType);
+		findKeyId(classType);
+		initRowMapper(classType);
 	}
 	
 	private void findKeyId(Class<T> classType) {
-		Field[] fields = classType.getFields();
+		Field[] fields = classType.getDeclaredFields();
 		for (Field field : fields) {
 			if (field.getAnnotation(Id.class) != null) {
 				Column column = field.getAnnotation(Column.class);
@@ -68,6 +70,11 @@ public abstract class BaseDao<T> implements BaseMapper<T>{
 	private void initTableName(Class<T> classType) {
 		this.tableName = classType.getAnnotation(Table.class).name();
 	}
+	
+	private void initRowMapper(Class<T> classType) {
+		rowMapper = new ClassAnnotationRowMapper<T>(classType);
+	}
+	
 	public String getNomalSqlHead(String querySql) {
 		return new StringBuilder().append(selectHead).append(where).append(" ").append(querySql).toString();
 	}
@@ -128,7 +135,11 @@ public abstract class BaseDao<T> implements BaseMapper<T>{
 	@Override
 	public T selectByKey(Object key) {
 		String sql = selectHead + tableName + where + keyIdName + " = ?";
-		return jdbcTemplate.queryForObject(sql, rowMapper, key);
+		if (log.isDebugEnabled()) {
+			log.info(logSqlFormat(sql, key));
+		}
+		List<T> list = jdbcTemplate.query(sql, rowMapper, key);
+		return list == null || list.isEmpty() ? null : list.get(0);
 	}
 
 	@Override
