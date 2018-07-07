@@ -8,7 +8,7 @@ import java.lang.annotation.Target;
 @Target( { ElementType.FIELD })
 @Retention(RetentionPolicy.RUNTIME)
 public @interface Operator {
-	public enum OperatorMark {EQUAL(" = "), GREATER(" >= "), LESS(" <= "), LIKE(" like "), 
+	public enum OperatorMark {EQUAL(" = "), GREATEROREQUAL(" >= ") ,GREATER(" > "), LESSOREQUAL(" <= "), LESS(" < "), LIKE(" like "), 
 		NOTEQUAL(" <> "), IN(" in "), NOT_IN(" not in ");
 		private String operator;
 		OperatorMark(String operator){

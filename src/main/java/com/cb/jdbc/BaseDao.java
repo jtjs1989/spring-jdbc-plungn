@@ -4,7 +4,6 @@ import java.lang.reflect.Field;
 import java.lang.reflect.Modifier;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Map;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -30,6 +29,7 @@ public abstract class BaseDao<T> implements BaseMapper<T>{
 	private final static Logger log = LoggerFactory.getLogger(BaseDao.class);
 	public static final String SELECT = "select ";
 	public static final String FROM = " from ";
+	public static final String COUNT = " count(1) ";
 	public static final String selectHead = "select * from ";
 	public static final String where = " where ";
 	public static final String orderBy = " order by ";
@@ -41,7 +41,7 @@ public abstract class BaseDao<T> implements BaseMapper<T>{
 	public static final Pattern pattern = Pattern.compile("(.*)and(\\s)*$");
 	
 	private Class<T> type;
-	
+
 	private RowMapper<T> rowMapper;
 	/**
 	 * the key id name
@@ -55,6 +55,7 @@ public abstract class BaseDao<T> implements BaseMapper<T>{
 		initTableName(classType);
 		findKeyId(classType);
 		initRowMapper(classType);
+		DBMetaInfo.initFields(classType);
 	}
 	
 	private void findKeyId(Class<T> classType) {
@@ -67,6 +68,8 @@ public abstract class BaseDao<T> implements BaseMapper<T>{
 			}
 		}
 	}
+	
+	
 	private void initTableName(Class<T> classType) {
 		this.tableName = classType.getAnnotation(Table.class).name();
 	}
@@ -86,6 +89,9 @@ public abstract class BaseDao<T> implements BaseMapper<T>{
 		this.jdbcTemplate = jdbcTemplate;
 	}
 	
+	protected JdbcTemplate getJdbcTemplate(){
+		return jdbcTemplate;
+	}
 	
 	public <T> T queryObject(JdbcTemplate jdbcTemplate,String sql, RowMapper<T> rowMapper, Object... objects ) {
 		List<T> resultList = jdbcTemplate.query(sql, objects, rowMapper);
@@ -125,34 +131,80 @@ public abstract class BaseDao<T> implements BaseMapper<T>{
 		return updateObj(recode);
 	}
 
+	
+	@Override
+	public List<T> getAll() {
+		String sql = SELECT + DBMetaInfo.getFieldsStr(type) + FROM + tableName;
+		log.debug(sql);
+		List<T> result = jdbcTemplate.query(sql, rowMapper);
+		if (log.isDebugEnabled()) {
+			log.debug("result.size={}", result.size());
+		}
+		return result;
+	}
+
 	@Override
 	public int deleteById(Object key) {
 		StringBuilder sql = new StringBuilder("delete from ").append(tableName)
 				.append(where).append(keyIdName).append(" = ?");
-		return jdbcTemplate.update(sql.toString(), key);
+		log.debug(sql.toString());
+		int result = jdbcTemplate.update(sql.toString(), key);
+		log.debug("excete.efect.num={}", result);
+		return result;
 	}
 
 	@Override
 	public T selectByKey(Object key) {
 		String sql = selectHead + tableName + where + keyIdName + " = ?";
-		if (log.isDebugEnabled()) {
-			log.info(logSqlFormat(sql, key));
-		}
+		log.debug(logSqlFormat(sql, key));
 		List<T> list = jdbcTemplate.query(sql, rowMapper, key);
-		return list == null || list.isEmpty() ? null : list.get(0);
+		log.debug("result.size={}", list.size());
+		return list.isEmpty() ? null : list.get(0);
 	}
 
 	@Override
 	public List<T> select(T record) {
-		// TODO Auto-generated method stub
 		return null;
+	}
+	
+	@Override
+	public List<T> selectByExample(Example example) {
+		String columns = example.getSelectProperties();
+		columns = StringUtils.isEmpty(columns) ? DBMetaInfo.getFieldsStr(type) : columns;
+		String sql = SELECT + columns + FROM + tableName + example.getWhere() + example.getGroupBy()
+			+ example.getOrderByString() + example.getPageString();
+		if (log.isDebugEnabled()) {
+			log.debug(logSqlFormat(sql, example.getValues().toArray()));
+		}
+		List<T> result = jdbcTemplate.query(sql, example.getValues().toArray(), rowMapper);
+		if (log.isDebugEnabled()) {
+			log.debug("result.size={}", result.size());
+		}
+		return result;
+	}
+
+	
+	@Override
+	public int countByExample(Example example) {
+		String sql = SELECT + COUNT + FROM + tableName + example.getWhere();
+		if (log.isDebugEnabled()) {
+			log.debug(logSqlFormat(sql, example.getValues().toArray()));
+		}
+		Integer result = jdbcTemplate.queryForObject(sql, Integer.class, example.getValues().toArray());
+		log.debug("result.data={}", result);
+		return result == null ? 0 : result;
 	}
 
 	@Override
 	public int selectCount(T recode) {
 		QuerySqlHelper sqlHelp = getQuerySql(recode);
-		String sql = SELECT + "COUNT(1) " + FROM + tableName + where + sqlHelp.getSql();
-		return jdbcTemplate.queryForObject(sql, Integer.class, sqlHelp.getArgs().toArray());
+		String sql = SELECT + "COUNT(1)" + FROM + tableName + where + sqlHelp.getSql();
+		if (log.isDebugEnabled()) {
+			log.debug(logSqlFormat(sql, sqlHelp.getArgs().toArray()));
+		}
+		Integer result = jdbcTemplate.queryForObject(sql, Integer.class, sqlHelp.getArgs().toArray());
+		log.debug("result.data={}", result);
+		return result == null ? 0 : result;
 	}
 
 	private UpdateSqlHelper getAddSql(T obj) {
@@ -193,7 +245,7 @@ public abstract class BaseDao<T> implements BaseMapper<T>{
 	
 	
 	/**
-	 * 更新对象的所有字段  主键作为更新条件，不更新creatTime和updateTime字段
+	 * 更新对象的所有字段  主键作为更新条件，不更新creatTime字段
 	 * @param keyField  数据库主键字段
 	 * @param obj
 	 */
@@ -230,34 +282,13 @@ public abstract class BaseDao<T> implements BaseMapper<T>{
 			sbField.deleteCharAt(sbField.length()-1).append(" where ")
 				.append(keyIdName).append(" = ?");
 			if (log.isDebugEnabled()) {
-				log.info(logSqlFormat(sbField.toString(), args.toArray()));
+				log.debug(logSqlFormat(sbField.toString(), args.toArray()));
 			}
-			return jdbcTemplate.update(sbField.toString(), args.toArray());
+			int result = jdbcTemplate.update(sbField.toString(), args.toArray());
+			log.debug("excute.efect.num:{}",result);
+			return result;
 		}
 		return 0;
-	}
-	public List<T> queryObj(String tableName, Map<String, Object> queryMap, Class<?> obj, RowMapper<T> rowMapper){
-		StringBuilder sbField = new StringBuilder("select * from ");
-		sbField.append(tableName).append(" where ");
-		List<Object> values = new ArrayList<Object>();
-		boolean empty = true;
-		for (String field : queryMap.keySet()) {
-			Object value = queryMap.get(field);
-			if (value == null) {
-				continue;
-			}
-			Column column = AnnontationUtils.getFromField(Column.class, obj, field);
-			sbField.append(column.name()).append(" = ? and ");
-			values.add(queryMap.get(field));
-			empty = false;
-		}
-		if (!empty) {
-			sbField.delete(sbField.length() - 4, sbField.length()-1);
-		}
-		if (log.isDebugEnabled()) {
-			log.info("sql=" + sbField.toString());
-		}
-		return jdbcTemplate.query(sbField.toString(), rowMapper, values.toArray());
 	}
 	/**
 	 * @param sqlHelper
@@ -297,7 +328,7 @@ public abstract class BaseDao<T> implements BaseMapper<T>{
 				return string;
 			}
 			for (Object object : args) {
-				string = string.replaceFirst(regex, object.toString());
+				string = string.replaceFirst(regex, "\"" + object.toString() + "\"");
 			}
 			return string;
 		} catch (Exception e) {
@@ -314,26 +345,11 @@ public abstract class BaseDao<T> implements BaseMapper<T>{
 		StringBuilder querySql = sqlHelper.getSql();
 		List<Object> args = sqlHelper.getArgs();
 		if (log.isDebugEnabled()) {
-			log.info(logSqlFormat(querySql.toString(), "\\?", args.toArray()));
+			log.debug(logSqlFormat(querySql.toString(), "\\?", args.toArray()));
 		}
 		return jdbcTemplate.query(querySql.toString(), rowMapper, args.toArray());
 	}
 	
-	public long countQueryList(JdbcTemplate template, QueryVo query, String db_name){
-		QuerySqlHelper sqlHelper = getQuerySql(query);
-		StringBuilder querySql = sqlHelper.getSql();
-		List<Object> args = sqlHelper.getArgs();
-		Matcher matcher = pattern.matcher(querySql);
-		if (matcher.matches()) {
-			querySql = new StringBuilder(matcher.group(1));
-		}
-		if (querySql.length() > 0) {
-			querySql.insert(0, where);
-		}
-		querySql.insert(0, "select count(0) from " + db_name);
-		log.info(logSqlFormat(querySql.toString(), "\\?", args.toArray()));
-		return template.queryForObject(querySql.toString(), args.toArray(), Long.class);
-	}
 	/**
 	 * 通过queryVo 组装查询的sql 语句
 	 * @param queryVo
